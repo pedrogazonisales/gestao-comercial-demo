@@ -1,0 +1,566 @@
+// Modelo de dados — Sistema de Gestão Comercial
+// Convenções:
+// - Valores monetários em Decimal(12,2); nunca Float.
+// - CPF armazenado só com dígitos (11 caracteres).
+// - Nada que tenha valor histórico é apagado: usa-se status/ativo + AuditLog.
+// - Dados de venda e estoque sempre amarrados a uma Loja.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────── Enums ───────────────────────────
+
+enum Perfil {
+  ADMIN
+  GERENTE
+  VENDEDOR
+}
+
+enum FormaPagamento {
+  DINHEIRO
+  PIX
+  DEBITO
+  CREDITO
+  CREDIARIO // recebível próprio: gera parcelas e pode gerar inadimplência
+  CARNE // recebível próprio: gera parcelas e pode gerar inadimplência
+}
+
+enum TipoDesconto {
+  PERCENTUAL
+  VALOR
+}
+
+enum StatusVenda {
+  CONFIRMADA
+  CANCELADA
+}
+
+enum StatusParcela {
+  ABERTA
+  PARCIAL
+  PAGA
+  CANCELADA
+}
+
+enum TipoMovimentacao {
+  ENTRADA
+  SAIDA_VENDA
+  ESTORNO_VENDA
+  DEVOLUCAO
+  AJUSTE
+  TRANSFERENCIA_SAIDA
+  TRANSFERENCIA_ENTRADA
+}
+
+enum CanalContato {
+  WHATSAPP
+  TELEFONE
+  EMAIL
+  PRESENCIAL
+  SMS
+  OUTRO
+}
+
+enum StatusCobranca {
+  PENDENTE
+  PRIMEIRA_TENTATIVA
+  CLIENTE_CONTATADO
+  PROMESSA_PAGAMENTO
+  PAGAMENTO_PARCIAL
+  NEGOCIACAO
+  REGULARIZADO
+  ANALISE_GERENCIAL
+}
+
+// ─────────────────────── Lojas e acesso ───────────────────────
+
+model Loja {
+  id        String   @id @default(cuid())
+  codigo    String   @unique // ex.: L01, L02
+  nome      String
+  endereco  String?
+  telefone  String?
+  ativa     Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  estoques       EstoqueSaldo[]
+  movimentacoes  MovimentacaoEstoque[]
+  vendas         Venda[]
+  usuariosPadrao Usuario[]
+}
+
+model Usuario {
+  id           String    @id @default(cuid())
+  nome         String
+  login        String    @unique
+  email        String?   @unique
+  senhaHash    String
+  perfil       Perfil
+  ativo        Boolean   @default(true)
+  trocarSenha  Boolean   @default(true) // força troca no primeiro acesso
+  ultimoAcesso DateTime?
+  lojaPadraoId String?
+  lojaPadrao   Loja?     @relation(fields: [lojaPadraoId], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  vendedor               Vendedor?
+  sessoes                Sessao[]
+  auditorias             AuditLog[]
+  movimentacoes          MovimentacaoEstoque[]
+  vendasOperadas         Venda[]               @relation("VendaOperador")
+  vendasCanceladas       Venda[]               @relation("VendaCanceladaPor")
+  descontosAutorizados   Venda[]               @relation("VendaDescontoAutorizadoPor")
+  interacoesPosVenda     InteracaoPosVenda[]
+  interacoesCobranca     InteracaoCobranca[]
+  cobrancasResponsavel   Cobranca[]
+  recebimentos           Recebimento[]
+  recebimentosEstornados Recebimento[]         @relation("RecebimentoEstornadoPor")
+  clientesCriados        Cliente[]             @relation("ClienteCriadoPor")
+  ajustesPrazo           PosVenda[]            @relation("PosVendaPrazoAjustadoPor")
+  contatosPresente       PresenteContato[]
+}
+
+model Sessao {
+  id        String   @id @default(cuid())
+  usuarioId String
+  usuario   Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique // armazena só o hash do token do cookie
+  lojaId    String? // loja em que o usuário está operando nesta sessão
+  expiraEm  DateTime
+  createdAt DateTime @default(now())
+  ip        String?
+
+  @@index([usuarioId])
+}
+
+// Vendedores circulam entre lojas: não ficam presos a uma loja.
+model Vendedor {
+  id           String   @id @default(cuid())
+  usuarioId    String?  @unique
+  usuario      Usuario? @relation(fields: [usuarioId], references: [id])
+  nome         String
+  cpf          String   @unique
+  telefone     String?
+  email        String?
+  dataAdmissao DateTime @db.Date
+  ativo        Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  vendas    Venda[]
+  clientes  Cliente[]
+  posVendas PosVenda[]
+}
+
+// ─────────────────────────── Clientes ───────────────────────────
+
+model Cliente {
+  id             String    @id @default(cuid())
+  cpf            String    @unique
+  nome           String
+  nomeSocial     String?
+  dataNascimento DateTime? @db.Date
+  celular        String?
+  telefoneFixo   String?
+  email          String?
+  cep            String?
+  uf             String?   @db.Char(2)
+  cidade         String?
+  bairro         String?
+  tipoLogradouro String?
+  logradouro     String?
+  numero         String?
+  complemento    String?
+  observacoes    String?
+
+  // LGPD
+  consentimentoContato Boolean   @default(false)
+  consentimentoEm      DateTime?
+
+  vendedorResponsavelId String?
+  vendedorResponsavel   Vendedor? @relation(fields: [vendedorResponsavelId], references: [id])
+  criadoPorId           String?
+  criadoPor             Usuario?  @relation("ClienteCriadoPor", fields: [criadoPorId], references: [id])
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  vendas    Venda[]
+  posVendas PosVenda[]
+  parcelas  Parcela[]
+  cobrancas Cobranca[]
+  presentes PresenteCliente[]
+
+  @@index([nome])
+}
+
+// ─────────────────────── Produtos e estoque ───────────────────────
+
+model Categoria {
+  id       String    @id @default(cuid())
+  nome     String    @unique
+  ativa    Boolean   @default(true)
+  produtos Produto[]
+}
+
+model Marca {
+  id       String    @id @default(cuid())
+  nome     String    @unique
+  ativa    Boolean   @default(true)
+  produtos Produto[]
+}
+
+// Produto = o modelo (ex.: "Tênis de corrida X200").
+// Variação = o item vendável com estoque (ex.: "Dourado / lente verde / 58mm").
+// Produto sem variações tem exatamente uma variação "Padrão".
+model Produto {
+  id          String    @id @default(cuid())
+  codigo      String    @unique
+  nome        String
+  categoriaId String
+  categoria   Categoria @relation(fields: [categoriaId], references: [id])
+  marcaId     String?
+  marca       Marca?    @relation(fields: [marcaId], references: [id])
+  descricao   String?
+  ativo       Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  variacoes ProdutoVariacao[]
+  foto      ProdutoFoto?
+
+  @@index([nome])
+}
+
+// Foto reduzida no navegador (WebP, ~800px) e guardada no banco no protótipo.
+// Na produção pode migrar para armazenamento de objetos sem mudar as telas (rota /api/produtos/[id]/foto).
+model ProdutoFoto {
+  produtoId String   @id
+  produto   Produto  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  mime      String
+  dados     Bytes
+  updatedAt DateTime @updatedAt
+}
+
+model ProdutoVariacao {
+  id           String  @id @default(cuid())
+  produtoId    String
+  produto      Produto @relation(fields: [produtoId], references: [id])
+  sku          String  @unique
+  codigoBarras String? @unique
+  descricao    String  @default("Padrão") // ex.: "Preto / 52mm", "Aro 16"
+  cor          String?
+  tamanho      String?
+  precoCusto   Decimal @db.Decimal(12, 2)
+  precoVenda   Decimal @db.Decimal(12, 2)
+  ativo        Boolean @default(true)
+
+  estoques      EstoqueSaldo[]
+  movimentacoes MovimentacaoEstoque[]
+  itensVenda    VendaItem[]
+}
+
+model EstoqueSaldo {
+  variacaoId    String
+  variacao      ProdutoVariacao @relation(fields: [variacaoId], references: [id])
+  lojaId        String
+  loja          Loja            @relation(fields: [lojaId], references: [id])
+  quantidade    Int             @default(0)
+  estoqueMinimo Int             @default(0)
+  updatedAt     DateTime        @updatedAt
+
+  @@id([variacaoId, lojaId])
+}
+
+model MovimentacaoEstoque {
+  id              String           @id @default(cuid())
+  variacaoId      String
+  variacao        ProdutoVariacao  @relation(fields: [variacaoId], references: [id])
+  lojaId          String
+  loja            Loja             @relation(fields: [lojaId], references: [id])
+  tipo            TipoMovimentacao
+  quantidade      Int // positiva = entrada, negativa = saída
+  saldoAnterior   Int
+  saldoPosterior  Int
+  justificativa   String?
+  usuarioId       String
+  usuario         Usuario          @relation(fields: [usuarioId], references: [id])
+  vendaId         String?
+  venda           Venda?           @relation(fields: [vendaId], references: [id])
+  transferenciaId String? // agrupa a saída e a entrada de uma transferência entre lojas
+  createdAt       DateTime         @default(now())
+
+  @@index([variacaoId, lojaId, createdAt])
+  @@index([vendaId])
+}
+
+// ─────────────────────────── Vendas ───────────────────────────
+
+model Venda {
+  id         String   @id @default(cuid())
+  numero     Int      @unique @default(autoincrement()) // código da venda; exibido como V-000123
+  lojaId     String
+  loja       Loja     @relation(fields: [lojaId], references: [id])
+  vendedorId String
+  vendedor   Vendedor @relation(fields: [vendedorId], references: [id])
+  clienteId  String
+  cliente    Cliente  @relation(fields: [clienteId], references: [id])
+  operadorId String
+  operador   Usuario  @relation("VendaOperador", fields: [operadorId], references: [id])
+  dataHora   DateTime @default(now())
+
+  valorBruto              Decimal       @db.Decimal(12, 2)
+  descontoTipo            TipoDesconto?
+  descontoPercentual      Decimal?      @db.Decimal(5, 2)
+  descontoValor           Decimal       @default(0) @db.Decimal(12, 2)
+  valorLiquido            Decimal       @db.Decimal(12, 2)
+  descontoAutorizadoPorId String?
+  descontoAutorizadoPor   Usuario?      @relation("VendaDescontoAutorizadoPor", fields: [descontoAutorizadoPorId], references: [id])
+
+  status             StatusVenda @default(CONFIRMADA)
+  presente           Boolean     @default(false) // resposta obrigatória na venda: é presente?
+  observacoes        String?
+  chaveIdempotencia  String      @unique // impede gravar a mesma venda duas vezes (duplo clique, reenvio)
+  canceladaEm        DateTime?
+  canceladaPorId     String?
+  canceladaPor       Usuario?    @relation("VendaCanceladaPor", fields: [canceladaPorId], references: [id])
+  motivoCancelamento String?
+
+  itens            VendaItem[]
+  pagamentos       Pagamento[]
+  parcelas         Parcela[]
+  movimentacoes    MovimentacaoEstoque[]
+  posVenda         PosVenda?
+  cobranca         Cobranca?
+  presenteRegistro PresenteCliente?
+
+  @@index([lojaId, dataHora])
+  @@index([vendedorId, dataHora])
+  @@index([clienteId])
+}
+
+model VendaItem {
+  id            String          @id @default(cuid())
+  vendaId       String
+  venda         Venda           @relation(fields: [vendaId], references: [id])
+  variacaoId    String
+  variacao      ProdutoVariacao @relation(fields: [variacaoId], references: [id])
+  quantidade    Int
+  precoUnitario Decimal         @db.Decimal(12, 2) // congelado no momento da venda
+  custoUnitario Decimal         @db.Decimal(12, 2) // congelado para cálculo de margem
+  valorTotal    Decimal         @db.Decimal(12, 2)
+}
+
+// Uma venda pode ter mais de uma forma de pagamento (ex.: entrada no PIX + carnê).
+model Pagamento {
+  id             String         @id @default(cuid())
+  vendaId        String
+  venda          Venda          @relation(fields: [vendaId], references: [id])
+  forma          FormaPagamento
+  valor          Decimal        @db.Decimal(12, 2)
+  numeroParcelas Int            @default(1) // no cartão de crédito é só informativo
+  parcelas       Parcela[]
+}
+
+// Parcelas existem apenas para recebíveis próprios (CREDIARIO e CARNE).
+// "Vencida" não é status gravado: é calculado (vencimento < hoje e saldo > 0).
+model Parcela {
+  id          String        @id @default(cuid())
+  pagamentoId String
+  pagamento   Pagamento     @relation(fields: [pagamentoId], references: [id])
+  vendaId     String
+  venda       Venda         @relation(fields: [vendaId], references: [id])
+  clienteId   String
+  cliente     Cliente       @relation(fields: [clienteId], references: [id])
+  numero      Int
+  vencimento  DateTime      @db.Date
+  valor       Decimal       @db.Decimal(12, 2)
+  valorPago   Decimal       @default(0) @db.Decimal(12, 2)
+  status      StatusParcela @default(ABERTA)
+  quitadaEm   DateTime?
+
+  recebimentos Recebimento[]
+
+  @@unique([pagamentoId, numero])
+  @@index([vencimento, status])
+  @@index([clienteId])
+}
+
+model Recebimento {
+  id             String         @id @default(cuid())
+  parcelaId      String
+  parcela        Parcela        @relation(fields: [parcelaId], references: [id])
+  valor          Decimal        @db.Decimal(12, 2)
+  forma          FormaPagamento
+  dataPagamento  DateTime       @default(now())
+  usuarioId      String
+  usuario        Usuario        @relation(fields: [usuarioId], references: [id])
+  observacao     String?
+  lojaId         String? // loja onde o pagamento foi recebido
+  // Estorno (lançamento errado): o registro fica, apenas marcado, e o valor volta para a parcela.
+  estornadoEm    DateTime?
+  estornadoPorId String?
+  estornadoPor   Usuario?       @relation("RecebimentoEstornadoPor", fields: [estornadoPorId], references: [id])
+  motivoEstorno  String?
+
+  @@index([parcelaId])
+}
+
+// ─────────────────────────── Pós-venda ───────────────────────────
+
+// Fluxo configurável. Seed inicial: Aguardando contato, Contato realizado,
+// Aguardando resposta, Resposta recebida, Atendimento concluído, Necessita novo contato.
+model StatusPosVenda {
+  id       String  @id @default(cuid())
+  nome     String  @unique
+  ordem    Int
+  inicial  Boolean @default(false)
+  finaliza Boolean @default(false) // encerra a contagem regressiva
+  ativo    Boolean @default(true)
+
+  posVendas          PosVenda[]
+  interacoesAnterior InteracaoPosVenda[] @relation("StatusAnterior")
+  interacoesNovo     InteracaoPosVenda[] @relation("StatusNovo")
+}
+
+model PosVenda {
+  id                 String         @id @default(cuid())
+  vendaId            String         @unique
+  venda              Venda          @relation(fields: [vendaId], references: [id])
+  clienteId          String
+  cliente            Cliente        @relation(fields: [clienteId], references: [id])
+  vendedorId         String
+  vendedor           Vendedor       @relation(fields: [vendedorId], references: [id])
+  statusId           String
+  status             StatusPosVenda @relation(fields: [statusId], references: [id])
+  prazoOriginal      DateTime // data da venda + prazo configurado (padrão 7 dias)
+  prazo              DateTime
+  prazoAjustadoPorId String?
+  prazoAjustadoPor   Usuario?       @relation("PosVendaPrazoAjustadoPor", fields: [prazoAjustadoPorId], references: [id])
+  motivoAjustePrazo  String?
+  proximoContato     DateTime?
+  concluidoEm        DateTime?
+  observacoes        String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  interacoes InteracaoPosVenda[]
+
+  @@index([statusId, prazo])
+  @@index([vendedorId])
+}
+
+model InteracaoPosVenda {
+  id               String          @id @default(cuid())
+  posVendaId       String
+  posVenda         PosVenda        @relation(fields: [posVendaId], references: [id])
+  usuarioId        String
+  usuario          Usuario         @relation(fields: [usuarioId], references: [id])
+  data             DateTime        @default(now())
+  canal            CanalContato
+  resultado        String
+  statusAnteriorId String?
+  statusAnterior   StatusPosVenda? @relation("StatusAnterior", fields: [statusAnteriorId], references: [id])
+  statusNovoId     String?
+  statusNovo       StatusPosVenda? @relation("StatusNovo", fields: [statusNovoId], references: [id])
+}
+
+// ─────────────────────────── Presentes ───────────────────────────
+
+// Um registro por venda de presente: as datas de um cliente se acumulam, nunca se substituem.
+// A data da comemoração é opcional; com ela, o presente volta ao pós-venda todo ano (ver lib/presente.ts).
+model PresenteCliente {
+  id         String    @id @default(cuid())
+  clienteId  String
+  cliente    Cliente   @relation(fields: [clienteId], references: [id])
+  vendaId    String    @unique
+  venda      Venda     @relation(fields: [vendaId], references: [id])
+  data       DateTime? @db.Date
+  observacao String? // para quem é, qual a comemoração
+  createdAt  DateTime  @default(now())
+
+  contatos PresenteContato[]
+
+  @@index([clienteId])
+}
+
+// Contato feito por causa da data de um presente, em determinado ano.
+model PresenteContato {
+  id         String          @id @default(cuid())
+  presenteId String
+  presente   PresenteCliente @relation(fields: [presenteId], references: [id])
+  ano        Int // ano da ocorrência da data que motivou o contato
+  usuarioId  String
+  usuario    Usuario         @relation(fields: [usuarioId], references: [id])
+  data       DateTime        @default(now())
+  canal      CanalContato
+  resultado  String
+
+  @@index([presenteId, ano])
+}
+
+// ─────────────────────────── Inadimplência ───────────────────────────
+
+// A lista de inadimplentes é calculada a partir das parcelas vencidas.
+// A Cobranca é aberta quando alguém começa a tratar o caso e guarda o histórico.
+model Cobranca {
+  id            String         @id @default(cuid())
+  vendaId       String         @unique
+  venda         Venda          @relation(fields: [vendaId], references: [id])
+  clienteId     String
+  cliente       Cliente        @relation(fields: [clienteId], references: [id])
+  status        StatusCobranca @default(PENDENTE)
+  responsavelId String?
+  responsavel   Usuario?       @relation(fields: [responsavelId], references: [id])
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  interacoes InteracaoCobranca[]
+
+  @@index([status])
+}
+
+model InteracaoCobranca {
+  id             String          @id @default(cuid())
+  cobrancaId     String
+  cobranca       Cobranca        @relation(fields: [cobrancaId], references: [id])
+  usuarioId      String
+  usuario        Usuario         @relation(fields: [usuarioId], references: [id])
+  data           DateTime        @default(now())
+  canal          CanalContato
+  descricao      String
+  statusAnterior StatusCobranca?
+  statusNovo     StatusCobranca
+  valorPrometido Decimal?        @db.Decimal(12, 2)
+  dataPromessa   DateTime?       @db.Date
+}
+
+// ─────────────────────── Configuração e auditoria ───────────────────────
+
+model Configuracao {
+  chave     String   @id // ex.: "posvenda.prazoDias"
+  valor     Json
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  usuarioId  String?
+  usuario    Usuario? @relation(fields: [usuarioId], references: [id])
+  acao       String // ex.: VENDA_CANCELADA, ESTOQUE_AJUSTADO, CLIENTE_EDITADO
+  entidade   String
+  entidadeId String?
+  dados      Json? // antes/depois, sem dados sensíveis desnecessários
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([entidade, entidadeId])
+  @@index([createdAt])
+}

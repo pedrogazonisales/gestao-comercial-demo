@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+/* Identidade neutra (padrão). A cor principal de cada empresa vem de EMPRESA_COR e sobrepõe
+   --color-marca* e --color-grafico (ver src/lib/empresa.ts e src/app/layout.tsx).
+   "ouro" é o nome histórico da cor de destaque (detalhes, selos); aqui é um cinza-azulado neutro. */
+@theme {
+  --color-marca: #334155;
+  --color-marca-escuro: #1e293b;
+  --color-marca-claro: #eef1f5;
+  --color-ouro: #94a3b8;
+  --color-ouro-texto: #475569; /* destaque com contraste suficiente para texto sobre branco */
+  --color-ouro-claro: #f1f4f8;
+  --color-fundo: #f8f7f3;
+  --color-superficie: #ffffff;
+  --color-borda: #e6e2d8;
+  --color-texto: #1e1d2a;
+  --color-texto-suave: #676575;
+  --color-sucesso: #2b7a4b;
+  --color-sucesso-claro: #e6f3ea;
+  --color-alerta: #a86a12;
+  --color-alerta-claro: #fbf0dc;
+  --color-erro: #b42318;
+  --color-erro-claro: #fbe9e7;
+  /* Gráficos: cor principal clareada (precisa manter contraste ≥3:1 no branco). */
+  --color-grafico: #5b6f8f;
+  --color-grafico-grade: #ebe8e1;
+  --color-grafico-eixo: #8a8796;
+}
+
+@theme {
+  --font-sans: "Inter Variable", system-ui, "Segoe UI", sans-serif;
+  --font-serif: "Cormorant Garamond", Georgia, serif;
+}
+
+body {
+  background: var(--color-fundo);
+  color: var(--color-texto);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-marca);
+  outline-offset: 2px;
+}
